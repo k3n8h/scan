@@ -2,9 +2,10 @@ import { useState } from 'react';
 import { KeyTools } from './components/KeyTools';
 import { PuzzleTable } from './components/PuzzleTable';
 import { Brainwallet } from './components/Brainwallet';
+import { AddressCheck } from './components/AddressCheck';
 
-const TABS = { puzzles: PuzzleTable, keys: KeyTools, brain: Brainwallet } as const;
-const LABELS: Record<keyof typeof TABS, string> = { puzzles: 'Puzzles', keys: 'Key tools', brain: 'Brainwallet check' };
+const TABS = { puzzles: PuzzleTable, keys: KeyTools, brain: Brainwallet, addr: AddressCheck } as const;
+const LABELS: Record<keyof typeof TABS, string> = { puzzles: 'Puzzles', keys: 'Key tools', brain: 'Brainwallet check', addr: 'Address validator' };
 
 export function App() {
   const [tab, setTab] = useState<keyof typeof TABS>('puzzles');
