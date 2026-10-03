@@ -24,3 +24,20 @@ Features: puzzle catalogue with in-browser verification of published solutions, 
 - `Math.random` used in 28 places, some near key generation → replaced by CSPRNG.
 - Unused Gemini SDK/API key plumbing and a server dependency removed.
 - **Not rebuilt**: high-throughput key-search engines (range scanner, BSGS/Kangaroo, vanity). Deliberately left out.
+
+## Native range scanner (`cli/`, Rust)
+
+Scans slices of a puzzle's key range for its published address. Targets come only from `data/puzzles.json` (`scan solve <puzzle#>`).
+
+```
+cargo build --release
+./target/release/scan bench
+./target/release/scan solve 32 --offset 0x3834df6e --keys 4000000   # known-answer check
+./target/release/scan solve 71 --random --keys 1000000000          # a slice of an unsolved range
+```
+
+Method: one point addition per key (P += G) with batched affine conversion, rayon-parallel over 2^20-key chunks.
+Measured ~0.66 Mkeys/s on 4 cores. **Feasibility:** puzzle *n* has 2^(n-1) keys, so on this engine puzzle 71 (2^70) would take
+~5×10^7 years. Only GPU-class throughput and/or public-key (Kangaroo) methods make high puzzles plausible, and even those
+are measured in huge GPU-years; low unsolved puzzles are not a realistic target for CPU. Not implemented: BSGS/Kangaroo
+(need the puzzle public key, not in the dataset), GPU kernels, vanity search.
