@@ -1,3 +1,5 @@
+mod kang;
+
 use clap::{Parser, Subcommand};
 use rayon::prelude::*;
 use scan_core::addr::*;
@@ -44,6 +46,23 @@ enum Cmd {
         #[arg(long)]
         uncompressed: bool,
     },
+    /// Pollard kangaroo simulation on a random key of the given size (validates the engine)
+    KangarooTest {
+        #[arg(long, default_value_t = 40)]
+        bits: u32,
+        #[arg(long, default_value_t = 256.0)]
+        jump_scale: f64,
+    },
+    /// Pollard kangaroo for a puzzle whose PUBLIC KEY is known. The key must hash to the puzzle's address.
+    Kangaroo {
+        puzzle: u32,
+        #[arg(long)]
+        pubkey: String,
+        #[arg(long, default_value_t = 256.0)]
+        jump_scale: f64,
+        #[arg(long, default_value_t = 1u64 << 40)]
+        max_ops: u64,
+    },
     /// Throughput benchmark
     Bench {
         #[arg(long, default_value_t = 8_000_000)]
@@ -86,6 +105,44 @@ fn parallel_scan(start: &[u8; 32], count: u64, target: &[u8; 20], unc: bool) -> 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     match cli.cmd {
+        Cmd::KangarooTest { bits, jump_scale } => {
+            let start = 1u128 << (bits - 1);
+            let k = start + rand::Rng::gen_range(&mut rand::thread_rng(), 0..start);
+            let q = (k256::ProjectivePoint::GENERATOR * k256::Scalar::from(k)).to_affine();
+            let t = Instant::now();
+            let o = kang::solve(&q, start, bits, jump_scale, 1 << 42);
+            let s = t.elapsed().as_secs_f64();
+            let sw = ((1u128 << (bits - 1)) as f64).sqrt();
+            println!("bits {bits}: {} ops = {:.2}·sqrt(W) in {s:.2}s ({:.2} Mops/s)", o.ops, o.ops as f64 / sw, o.ops as f64 / s / 1e6);
+            match o.key {
+                Some(f) if f == k => println!("OK recovered {f:#x}"),
+                Some(f) => println!("WRONG {f:#x} != {k:#x}"),
+                None => println!("not found"),
+            }
+        }
+        Cmd::Kangaroo { puzzle, pubkey, jump_scale, max_ops } => {
+            use k256::elliptic_curve::sec1::FromEncodedPoint;
+            let p = load(&cli.data, puzzle)?;
+            let bytes = hex::decode(pubkey.trim())?;
+            let ep = k256::EncodedPoint::from_bytes(&bytes).map_err(|_| "bad public key encoding")?;
+            let q = Option::<k256::AffinePoint>::from(k256::AffinePoint::from_encoded_point(&ep)).ok_or("public key not on curve")?;
+            let want = decode_address(&p.address)?;
+            if scan_core::addr::hash160(&bytes) != want {
+                return Err("public key does not match this puzzle's address".into());
+            }
+            if !(2..=126).contains(&puzzle) {
+                return Err("kangaroo supports puzzles 2..=126 (u128 arithmetic)".into());
+            }
+            let start = 1u128 << (puzzle - 1);
+            println!("kangaroo on puzzle {puzzle}: range 2^{} wide, expected ~2.5·2^{:.1} ops", puzzle - 1, (puzzle - 1) as f64 / 2.0);
+            let t = Instant::now();
+            let o = kang::solve(&q, start, puzzle, jump_scale, max_ops);
+            println!("{} ops in {:.1}s", o.ops, t.elapsed().as_secs_f64());
+            match o.key {
+                Some(k) => println!("FOUND key {k:032x}"),
+                None => println!("not found within max_ops"),
+            }
+        }
         Cmd::Bench { keys } => {
             let t = Instant::now();
             let (_, n) = parallel_scan(&parse_hex32("8000000000000000000000")?, keys, &[0u8; 20], false);

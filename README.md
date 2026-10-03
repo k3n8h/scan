@@ -36,15 +36,28 @@ cargo build --release
 ./target/release/scan solve 71 --random --keys 1000000000          # a slice of an unsolved range
 ```
 
-Method (`core/src/fast.rs`): the range is walked in centered batches of 1,025 keys (C ± i·G for i ≤ 512, using a
-precomputed table), so a whole batch shares **one** field inversion (Montgomery's trick) on a hand-written 4×64-bit secp256k1
-field. Profiling showed the original k256 `batch_normalize` actually inverted per key (4,763 ns/key, >90% of runtime);
-this took the scanner from 0.66 to ~9.2 Mkeys/s on 4 cores (13×). The reference implementation (`range.rs`) is kept for
-cross-checks and tiny start keys; tests verify the fast path finds the key at every batch boundary.
-Remaining cost is hash160 (~300 ns/key, SHA-NI + software RIPEMD-160).
+### Methods, measured
 
-**Feasibility, honestly:** puzzle *n* has 2^(n-1) keys. At ~9 Mkeys/s, puzzle 71 (2^70) takes ~4 million years on this
-machine, and each extra puzzle number doubles that. I found no mathematical shortcut for the unsolved puzzles (keys behave as
-uniformly random inside their range) and did no web research, so I'm not claiming one. Even a GPU fleet only makes the
-lowest unsolved puzzles conceivable. Not implemented: BSGS/Kangaroo (need puzzle public keys, absent from the dataset),
-GPU kernels, vanity search.
+**1. Sequential scan (`scan solve`)** works from the address alone. `core/src/fast.rs`: centered batches (C ± i·G) share
+one field inversion (original k256 "batch" normalize inverted per key: 4,763 ns/key), then an 8-lane AVX2 RIPEMD-160
+(`rmd8.rs`, verified against the reference on 1,600 random inputs). 0.66 → 9.2 → **~15 Mkeys/s** on 4 cores.
+Puzzle *n* needs up to 2^(n-1) keys, so puzzle 71 is ~2.5×10^6 core-years at this rate.
+
+**2. Pollard's kangaroo (`scan kangaroo <puzzle> --pubkey <hex>`)** works when the puzzle's **public key** is known
+(an address is only a hash, so this needs the key to have been revealed on-chain). ~√W operations instead of W.
+`cli/src/kang.rs`: 2,048 kangaroos in lock-step sharing one inversion, distinguished points, jump size tuned by sweep
+(mean jump ≈ 256·√W for this herd; the naive setting was 600× slower). Measured over 16 runs at 40–52 bits: all
+recovered, 1.6–4.8·√W operations (typical ~3), ~25 Mops/s. Puzzles 50 and 55 solved through the CLI from their public
+keys; the key must hash to the puzzle's address, otherwise the command refuses.
+Estimated time at ~3·√W ops, 25 Mops/s, this 4-core box (extrapolated from the measurements, not run):
+
+| puzzle | 66 | 71 | 75 | 80 | 90 | 100 | 110 | 120 | 135 | 160 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| time | 0.2 h | 1.1 h | 4.6 h | 26 h | 35 d | 3 y | 97 y | 3×10³ y | 5.6×10⁵ y | 3×10⁹ y |
+
+Caveat: those numbers apply **only to puzzles whose public key is known**. I have not verified which unsolved puzzles
+have an exposed key (the dataset has addresses only), so this tool cannot be pointed at one until you supply a key.
+Without a public key only method 1 applies. Kangaroo is limited to puzzles ≤ 126 (u128 distances).
+
+**Not tried:** GPU kernels, BSGS (memory-bound; kangaroo already beats it here), multi-machine DP sharing.
+Reversing hash160 or finding structure in the puzzle keys: no known approach, nothing tested.
