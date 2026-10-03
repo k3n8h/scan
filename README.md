@@ -36,8 +36,15 @@ cargo build --release
 ./target/release/scan solve 71 --random --keys 1000000000          # a slice of an unsolved range
 ```
 
-Method: one point addition per key (P += G) with batched affine conversion, rayon-parallel over 2^20-key chunks.
-Measured ~0.66 Mkeys/s on 4 cores. **Feasibility:** puzzle *n* has 2^(n-1) keys, so on this engine puzzle 71 (2^70) would take
-~5×10^7 years. Only GPU-class throughput and/or public-key (Kangaroo) methods make high puzzles plausible, and even those
-are measured in huge GPU-years; low unsolved puzzles are not a realistic target for CPU. Not implemented: BSGS/Kangaroo
-(need the puzzle public key, not in the dataset), GPU kernels, vanity search.
+Method (`core/src/fast.rs`): the range is walked in centered batches of 1,025 keys (C ± i·G for i ≤ 512, using a
+precomputed table), so a whole batch shares **one** field inversion (Montgomery's trick) on a hand-written 4×64-bit secp256k1
+field. Profiling showed the original k256 `batch_normalize` actually inverted per key (4,763 ns/key, >90% of runtime);
+this took the scanner from 0.66 to ~9.2 Mkeys/s on 4 cores (13×). The reference implementation (`range.rs`) is kept for
+cross-checks and tiny start keys; tests verify the fast path finds the key at every batch boundary.
+Remaining cost is hash160 (~300 ns/key, SHA-NI + software RIPEMD-160).
+
+**Feasibility, honestly:** puzzle *n* has 2^(n-1) keys. At ~9 Mkeys/s, puzzle 71 (2^70) takes ~4 million years on this
+machine, and each extra puzzle number doubles that. I found no mathematical shortcut for the unsolved puzzles (keys behave as
+uniformly random inside their range) and did no web research, so I'm not claiming one. Even a GPU fleet only makes the
+lowest unsolved puzzles conceivable. Not implemented: BSGS/Kangaroo (need puzzle public keys, absent from the dataset),
+GPU kernels, vanity search.

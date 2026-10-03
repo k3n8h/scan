@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use rayon::prelude::*;
 use scan_core::addr::*;
+use scan_core::fast::{fast_ok, scan_fast, Tables};
 use scan_core::range::{scan_range, Hit};
 use serde::Deserialize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -58,12 +59,21 @@ fn load(path: &str, id: u32) -> Result<Puzzle, Box<dyn std::error::Error>> {
 fn parallel_scan(start: &[u8; 32], count: u64, target: &[u8; 20], unc: bool) -> (Option<Hit>, u64) {
     let stop = AtomicBool::new(false);
     let tested = AtomicU64::new(0);
+    // Fast batched-inversion path handles compressed keys away from the tiny-key edge cases.
+    let tables = (!unc && fast_ok(start)).then(Tables::new);
     let hit = (0..count.div_ceil(CHUNK)).into_par_iter().find_map_any(|i| {
         if stop.load(Ordering::Relaxed) {
             return None;
         }
         let n = CHUNK.min(count - i * CHUNK);
-        let (h, t) = scan_range(&add_be(start, (i * CHUNK) as u128), n, target, unc, &stop).ok()?;
+        let begin = add_be(start, (i * CHUNK) as u128);
+        let (h, t) = match &tables {
+            Some(t) => {
+                let (k, t) = scan_fast(t, &begin, n, target, &stop).ok()?;
+                (k.map(|key| Hit { key, compressed: true }), t)
+            }
+            None => scan_range(&begin, n, target, unc, &stop).ok()?,
+        };
         tested.fetch_add(t, Ordering::Relaxed);
         if h.is_some() {
             stop.store(true, Ordering::Relaxed);
