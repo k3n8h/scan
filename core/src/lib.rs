@@ -8,3 +8,5 @@ pub mod addr;
 pub mod fast;
 pub mod fe;
 pub mod range;
+#[cfg(target_arch = "x86_64")]
+pub mod rmd8;

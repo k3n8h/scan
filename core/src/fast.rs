@@ -109,10 +109,8 @@ pub fn scan_fast(t: &Tables, start: &[u8; 32], count: u64, target: &[u8; 20], st
         py[HALF] = cy;
 
         let n = ((count - done) as usize).min(BATCH);
-        for j in 0..n {
-            if hash160_c(&px[j], &py[j], &mut buf) == *target {
-                return Ok((Some(add_be(start, (done + j as u64) as u128)), done + j as u64 + 1));
-            }
+        if let Some(j) = find_match(&px[..n], &py[..n], target, &mut buf) {
+            return Ok((Some(add_be(start, (done + j as u64) as u128)), done + j as u64 + 1));
         }
         done += n as u64;
         if done >= count {
@@ -128,4 +126,47 @@ pub fn scan_fast(t: &Tables, start: &[u8; 32], count: u64, target: &[u8; 20], st
         cy = y3;
     }
     Ok((None, done))
+}
+
+/// First index in the batch whose compressed-key hash160 equals `target` (AVX2 8-lane path when available).
+fn find_match(px: &[Fe], py: &[Fe], target: &[u8; 20], buf: &mut [u8; 33]) -> Option<usize> {
+    let n = px.len();
+    let mut j = 0;
+    #[cfg(target_arch = "x86_64")]
+    if is_x86_feature_detected!("avx2") {
+        use core::arch::x86_64::*;
+        let t0 = u32::from_le_bytes(target[..4].try_into().unwrap());
+        while j + 8 <= n {
+            let mut words = [[0u32; 8]; 8];
+            for l in 0..8 {
+                let ny = fe::normalize(&py[j + l]);
+                buf[0] = 0x02 | (ny[0] & 1) as u8;
+                buf[1..].copy_from_slice(&fe::to_be(&px[j + l]));
+                let d = Sha256::digest(&buf[..]);
+                for (w, row) in words.iter_mut().enumerate() {
+                    row[l] = u32::from_le_bytes(d[4 * w..4 * w + 4].try_into().unwrap());
+                }
+            }
+            // Compare the first output word of all 8 lanes at once; verify candidates fully.
+            let mask = unsafe {
+                let out = crate::rmd8::ripemd160_x8(&words);
+                _mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(out[0], _mm256_set1_epi32(t0 as i32))))
+            };
+            if mask != 0 {
+                for l in 0..8 {
+                    if mask & (1 << l) != 0 && hash160_c(&px[j + l], &py[j + l], buf) == *target {
+                        return Some(j + l);
+                    }
+                }
+            }
+            j += 8;
+        }
+    }
+    while j < n {
+        if hash160_c(&px[j], &py[j], buf) == *target {
+            return Some(j);
+        }
+        j += 1;
+    }
+    None
 }
