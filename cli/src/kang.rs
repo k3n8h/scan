@@ -28,7 +28,7 @@ pub struct Outcome {
 }
 
 /// Find k in [start, start + 2^(bits-1)) with k·G == q. `bits` ≤ 126.
-pub fn solve(q: &AffinePoint, start: u128, bits: u32, jump_scale: f64, max_ops: u64) -> Outcome {
+pub fn solve(q: &AffinePoint, start: u128, bits: u32, jump_scale: f64, max_ops: u64, neg: bool) -> Outcome {
     assert!((2..=126).contains(&bits));
     let w: u128 = 1u128 << (bits - 1);
     let mid = start + w / 2;
@@ -36,14 +36,14 @@ pub fn solve(q: &AffinePoint, start: u128, bits: u32, jump_scale: f64, max_ops: 
     // Jump distances: uniform in [1, 2*mean]; mean ≈ jump_scale * sqrt(W).
     let mean = (sqrt_w * jump_scale).max(1.0) as u128;
     let mut rng = rand::thread_rng();
-    let dist: Vec<u128> = (0..JUMPS).map(|_| rng.gen_range(1..=2 * mean)).collect();
-    let jp: Vec<(Fe, Fe)> = dist.iter().map(|&d| xy(&mul_g(d))).collect();
+    let dist: Vec<i128> = (0..JUMPS).map(|_| rng.gen_range(1..=2 * mean) as i128).collect();
+    let jp: Vec<(Fe, Fe)> = dist.iter().map(|&d| xy(&mul_g(d as u128))).collect();
     // DP when the low `dbits` bits of x are zero; keeps the table to ~tens of thousands of entries.
     let dbits = ((sqrt_w.log2() as i32) - 12).clamp(0, 40) as u32;
     let dmask: u64 = if dbits == 0 { 0 } else { (1u64 << dbits) - 1 };
-    let spread = (sqrt_w as u128).max(1);
+    let spread = (sqrt_w as i128).max(1);
 
-    let table: Mutex<HashMap<u128, (u128, bool)>> = Mutex::new(HashMap::new());
+    let table: Mutex<HashMap<u128, (i128, bool)>> = Mutex::new(HashMap::new());
     let found = AtomicBool::new(false);
     let result = Mutex::new(None::<u128>);
     let ops = AtomicU64::new(0);
@@ -54,26 +54,43 @@ pub fn solve(q: &AffinePoint, start: u128, bits: u32, jump_scale: f64, max_ops: 
         let mut rng = rand::thread_rng();
         let n = 2 * HERD;
         let (mut px, mut py) = (vec![fe::ZERO; n], vec![fe::ZERO; n]);
-        let mut off = vec![0u128; n]; // r + travelled distance
+        let mut off = vec![0i128; n]; // signed key offset of the kangaroo (relative to `mid`)
         let tame = |i: usize| i < HERD;
-        let mid_pt = ProjectivePoint::from(mul_g(mid));
-        let q_pt = ProjectivePoint::from(qx);
+        // Work relative to the range midpoint: wild base is Q - mid·G, tame base is the identity.
+        let q_shift = ProjectivePoint::from(qx) - ProjectivePoint::from(mul_g(mid));
         for i in 0..n {
-            let r = rng.gen_range(0..spread);
-            let base = if tame(i) { mid_pt } else { q_pt };
-            let p = (base + ProjectivePoint::GENERATOR * Scalar::from(r)).to_affine();
-            let (x, y) = xy(&p);
+            let mut r = rng.gen_range(-spread..=spread);
+            if r == 0 {
+                r = 1;
+            }
+            let rg = if r >= 0 { ProjectivePoint::from(mul_g(r as u128)) } else { -ProjectivePoint::from(mul_g((-r) as u128)) };
+            let p = if tame(i) { rg } else { q_shift + rg };
+            let (x, y) = xy(&p.to_affine());
             px[i] = x;
             py[i] = y;
             off[i] = r;
         }
+        let mut hist = vec![[0u64; 8]; n];
+        let mut hpos = vec![0usize; n];
+        let mut esc = vec![false; n];
         let mut dx = vec![fe::ZERO; n];
         let mut scratch: Vec<Fe> = Vec::with_capacity(n);
         let mut idx = vec![0usize; n];
         let mut local = 0u64;
         while !found.load(Ordering::Relaxed) {
+            if neg {
+                // Fold P and -P into one class: keep the representative with even y.
+                for i in 0..n {
+                    if fe::normalize(&py[i])[0] & 1 == 1 {
+                        py[i] = fe::sub(&fe::ZERO, &py[i]);
+                        off[i] = -off[i];
+                    }
+                }
+            }
             for i in 0..n {
-                idx[i] = (px[i][0] as usize) & (JUMPS - 1);
+                // Escape the short cycles negation can create by taking an alternate jump.
+                let bump = if esc[i] { esc[i] = false; 1 } else { 0 };
+                idx[i] = ((px[i][0] as usize) + bump) & (JUMPS - 1);
                 let d = fe::sub(&jp[idx[i]].0, &px[i]);
                 dx[i] = if fe::normalize(&d) == fe::ZERO { fe::ONE } else { d };
             }
@@ -86,21 +103,40 @@ pub fn solve(q: &AffinePoint, start: u128, bits: u32, jump_scale: f64, max_ops: 
                 px[i] = x3;
                 py[i] = y3;
                 off[i] += dist[idx[i]];
+                if neg {
+                    // Fruitless-cycle detection: revisiting a recent x means a short loop.
+                    let xl = px[i][0];
+                    if hist[i].contains(&xl) {
+                        esc[i] = true;
+                    }
+                    hist[i][hpos[i]] = xl;
+                    hpos[i] = (hpos[i] + 1) & 7;
+                }
                 if px[i][0] & dmask == 0 {
+                    // Canonicalize before recording so trails from both signs meet.
+                    let (mut oy, mut oo) = (py[i], off[i]);
+                    if neg && fe::normalize(&oy)[0] & 1 == 1 {
+                        oy = fe::sub(&fe::ZERO, &oy);
+                        oo = -oo;
+                    }
+                    let _ = oy;
                     let xn = fe::normalize(&px[i]);
                     let key = (xn[0] as u128) | ((xn[1] as u128) << 64);
                     let mut t = table.lock().unwrap();
                     match t.get(&key).copied() {
                         Some((o2, was_tame)) if was_tame != tame(i) => {
-                            let (ot, ow) = if tame(i) { (off[i], o2) } else { (o2, off[i]) };
-                            let k = (mid + ot).wrapping_sub(ow);
-                            if mul_g(k) == qx {
-                                *result.lock().unwrap() = Some(k);
-                                found.store(true, Ordering::Relaxed);
+                            let (ot, ow) = if tame(i) { (oo, o2) } else { (o2, oo) };
+                            // tame: ot·G ; wild: (k' + ow)·G with k' = k - mid
+                            for kp in [ot - ow, ow - ot] {
+                                let kk = mid as i128 + kp;
+                                if kk > 0 && mul_g(kk as u128) == qx {
+                                    *result.lock().unwrap() = Some(kk as u128);
+                                    found.store(true, Ordering::Relaxed);
+                                }
                             }
                         }
                         _ => {
-                            t.insert(key, (off[i], tame(i)));
+                            t.insert(key, (oo, tame(i)));
                         }
                     }
                 }
@@ -125,12 +161,12 @@ mod tests {
 
     #[test]
     fn recovers_random_keys_in_several_ranges() {
-        for bits in [24u32, 30, 34] {
+        for (bits, neg) in [(24u32, false), (30, false), (34, false), (24, true), (30, true), (34, true)] {
             for _ in 0..3 {
                 let start = 1u128 << (bits - 1);
                 let k = start + rand::thread_rng().gen_range(0..start);
                 let q = mul_g(k);
-                let o = solve(&q, start, bits, 256.0, 1 << 34);
+                let o = solve(&q, start, bits, 8192.0, 1 << 34, neg);
                 assert_eq!(o.key, Some(k), "bits {bits}");
             }
         }
@@ -141,7 +177,7 @@ mod tests {
         let bits = 40u32;
         let start = 1u128 << (bits - 1);
         let q = mul_g(start + 12345);
-        let o = solve(&q, start, bits, 256.0, 4096);
+        let o = solve(&q, start, bits, 8192.0, 4096, true);
         assert!(o.key.is_none() || o.key == Some(start + 12345));
     }
 }
