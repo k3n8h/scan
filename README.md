@@ -77,3 +77,8 @@ No bias to exploit was found; this does not prove none exists.
 
 **Not tried:** GPU kernels, BSGS (memory-bound; kangaroo already beats it here), multi-machine DP sharing.
 Reversing hash160 or finding structure in the puzzle keys: no known approach, nothing tested.
+
+## Run & deploy
+- Web app: `cd web && npm install && npm run dev` (preview a production build: `npm run build && npx vite preview`).
+- Static deploy: `.github/workflows/pages.yml` publishes `web/dist` to GitHub Pages on every push to `main`
+  (repo Settings → Pages → Source: *GitHub Actions*). The native scanner/kangaroo CLI is not deployed; build it locally with `cargo build --release`.
