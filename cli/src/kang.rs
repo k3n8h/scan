@@ -34,6 +34,9 @@ pub fn solve(q: &AffinePoint, start: u128, bits: u32, jump_scale: f64, max_ops: 
     let mid = start + w / 2;
     let sqrt_w = (w as f64).sqrt();
     // Jump distances: uniform in [1, 2*mean]; mean ≈ jump_scale * sqrt(W).
+    // jump_scale <= 0 selects the tuned default: 8192 * 2^((bits-40)/4), fitted by sweeps at 40-52 bits
+    // for the 2,048-kangaroo herd on 4 threads (1.0-1.6 * sqrt(W) typical).
+    let jump_scale = if jump_scale > 0.0 { jump_scale } else { 8192.0 * 2f64.powf((bits as f64 - 40.0) / 4.0) };
     let mean = (sqrt_w * jump_scale).max(1.0) as u128;
     let mut rng = rand::thread_rng();
     let dist: Vec<i128> = (0..JUMPS).map(|_| rng.gen_range(1..=2 * mean) as i128).collect();
@@ -166,7 +169,7 @@ mod tests {
                 let start = 1u128 << (bits - 1);
                 let k = start + rand::thread_rng().gen_range(0..start);
                 let q = mul_g(k);
-                let o = solve(&q, start, bits, 8192.0, 1 << 34, neg);
+                let o = solve(&q, start, bits, 0.0, 1 << 34, neg);
                 assert_eq!(o.key, Some(k), "bits {bits}");
             }
         }
@@ -177,7 +180,7 @@ mod tests {
         let bits = 40u32;
         let start = 1u128 << (bits - 1);
         let q = mul_g(start + 12345);
-        let o = solve(&q, start, bits, 8192.0, 4096, true);
+        let o = solve(&q, start, bits, 0.0, 4096, true);
         assert!(o.key.is_none() || o.key == Some(start + 12345));
     }
 }

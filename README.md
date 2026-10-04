@@ -45,19 +45,35 @@ Puzzle *n* needs up to 2^(n-1) keys, so puzzle 71 is ~2.5×10^6 core-years at th
 
 **2. Pollard's kangaroo (`scan kangaroo <puzzle> --pubkey <hex>`)** works when the puzzle's **public key** is known
 (an address is only a hash, so this needs the key to have been revealed on-chain). ~√W operations instead of W.
-`cli/src/kang.rs`: 2,048 kangaroos in lock-step sharing one inversion, distinguished points, jump size tuned by sweep
-(mean jump ≈ 256·√W for this herd; the naive setting was 600× slower). Measured over 16 runs at 40–52 bits: all
-recovered, 1.6–4.8·√W operations (typical ~3), ~25 Mops/s. Puzzles 50 and 55 solved through the CLI from their public
-keys; the key must hash to the puzzle's address, otherwise the command refuses.
-Estimated time at ~3·√W ops, 25 Mops/s, this 4-core box (extrapolated from the measurements, not run):
+`cli/src/kang.rs`: 2,048 kangaroos in lock-step sharing one inversion, distinguished points, and three measured improvements:
+
+| change | effect (ops/√W, mean) |
+|---|---|
+| naive jump size (0.25·√W) | ~2,900 |
+| jump size tuned for the herd (256·√W) | ~3.2 |
+| + equivalence-class walk (P and −P folded), with 8-step cycle detection | ~1.6 (1.5–1.8× fewer ops, ~1.4× less wall time) |
+| + jump scale fitted to range size: 8192·2^((bits−40)/4) | ~1.0–1.6 at 40–52 bits |
+
+The first negation attempt was 20–100× *worse* (fruitless cycles, and the folded walk needs much larger jumps because
+it is a reflecting random walk); detection + re-tuning fixed it. The best scale drifts with range size (sweeps at 40, 44,
+48, 50, 52 bits, 6–15 runs each), hence the fitted formula; it was tuned for 4 threads / 2,048 kangaroos, other core counts
+are untested. Real runs through the CLI: puzzle 50 in 1.7–3.4 s, puzzle 55 in ~8.6 s (was 25 s plain). The key must hash to
+the puzzle's address, otherwise the command refuses.
+
+Estimated time at ~1.6·√W ops, ~23 Mops/s, this 4-core box (extrapolated from the measurements, not run):
 
 | puzzle | 66 | 71 | 75 | 80 | 90 | 100 | 110 | 120 | 135 | 160 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| time | 0.2 h | 1.1 h | 4.6 h | 26 h | 35 d | 3 y | 97 y | 3×10³ y | 5.6×10⁵ y | 3×10⁹ y |
+| time | 0.1 h | 0.7 h | 2.7 h | 15.0 h | 20 d | 1.8 y | 56 y | 1.8e+03 y | 3.3e+05 y | 1.9e+09 y |
 
 Caveat: those numbers apply **only to puzzles whose public key is known**. I have not verified which unsolved puzzles
 have an exposed key (the dataset has addresses only), so this tool cannot be pointed at one until you supply a key.
 Without a public key only method 1 applies. Kangaroo is limited to puzzles ≤ 126 (u128 distances).
+
+**3. Statistical look at the 82 solved keys** (position in range, bit balance, residues mod 2–16, serial correlation,
+k_n vs k_(n-1)): consistent with uniform random keys. One mod-8 skew appeared in the n≈50–70 half but not in n=20–49, and
+the worst of four modulus tests is that extreme ~13% of the time under pure chance, so it is not evidence of structure.
+No bias to exploit was found; this does not prove none exists.
 
 **Not tried:** GPU kernels, BSGS (memory-bound; kangaroo already beats it here), multi-machine DP sharing.
 Reversing hash160 or finding structure in the puzzle keys: no known approach, nothing tested.

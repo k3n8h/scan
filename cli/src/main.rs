@@ -50,7 +50,7 @@ enum Cmd {
     KangarooTest {
         #[arg(long, default_value_t = 40)]
         bits: u32,
-        #[arg(long, default_value_t = 8192.0)]
+        #[arg(long, default_value_t = 0.0)]
         jump_scale: f64,
         /// Disable the P/-P equivalence-class walk (slower; for comparison)
         #[arg(long)]
@@ -61,7 +61,7 @@ enum Cmd {
         puzzle: u32,
         #[arg(long)]
         pubkey: String,
-        #[arg(long, default_value_t = 8192.0)]
+        #[arg(long, default_value_t = 0.0)]
         jump_scale: f64,
         #[arg(long, default_value_t = 1u64 << 40)]
         max_ops: u64,
